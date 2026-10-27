@@ -157,7 +157,6 @@ def get_error_profile(resolution: str = Query("sp", description="'sp' for 48 set
             for r in rows
         ]
     else:
-        # Full 48 Settlement Periods Profile
         cur.execute("""
             SELECT 
                 settlement_period as period,
@@ -186,4 +185,26 @@ def get_error_profile(resolution: str = Query("sp", description="'sp' for 48 set
             }
             for r in rows
         ]
+
+
+# Static Frontend Serving (Active in Docker container / Unified build)
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    assets_dir = os.path.join(STATIC_DIR, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        # Serve exact file if it exists, otherwise fall back to SPA index.html
+        file_path = os.path.join(STATIC_DIR, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        index_file = os.path.join(STATIC_DIR, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        raise HTTPException(status_code=404, detail="Frontend assets not compiled.")
 

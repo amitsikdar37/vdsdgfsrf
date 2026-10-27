@@ -9,7 +9,8 @@ import {
   Layers, Search, RefreshCw, ArrowUpRight, ArrowDownRight, Database
 } from 'lucide-react';
 
-const API_BASE = "http://localhost:8000/api/v1";
+// Dynamic API base: uses environment variable for Vercel/production or falls back to /api/v1 (Vite proxy / Docker)
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('operations'); // 'operations' | 'analytics'
@@ -22,14 +23,72 @@ export default function App() {
   const [tableSearch, setTableSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [apiOnline, setApiOnline] = useState(false);
+  const [isWakingUp, setIsWakingUp] = useState(false);
+  const [wakeElapsed, setWakeElapsed] = useState(0);
+  const [retryCount, setRetryCount] = useState(1);
 
-  // 1. Fetch Summary & Diurnal Profile
+  // 1. Backend Health Check & Cold-Start Heartbeat Probe
+  const checkBackendHealth = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
+      if (res.ok) {
+        setApiOnline(true);
+        setIsWakingUp(false);
+        return true;
+      }
+    } catch (err) {
+      console.warn("Health probe pending:", err);
+    }
+    return false;
+  };
+
   useEffect(() => {
+    let isMounted = true;
+    let timerId = null;
+    let pollId = null;
+
+    async function initialProbe() {
+      // First quick attempt
+      const ok = await checkBackendHealth();
+      if (ok && isMounted) return;
+
+      // If backend is sleeping (Render free-tier cold start), show warming-up overlay
+      if (isMounted) {
+        setIsWakingUp(true);
+
+        // Second counter for user feedback
+        timerId = setInterval(() => {
+          if (isMounted) setWakeElapsed(prev => prev + 1);
+        }, 1000);
+
+        // Auto-poll health every 3 seconds
+        pollId = setInterval(async () => {
+          if (isMounted) {
+            setRetryCount(r => r + 1);
+            const success = await checkBackendHealth();
+            if (success) {
+              clearInterval(timerId);
+              clearInterval(pollId);
+            }
+          }
+        }, 3000);
+      }
+    }
+
+    initialProbe();
+
+    return () => {
+      isMounted = false;
+      if (timerId) clearInterval(timerId);
+      if (pollId) clearInterval(pollId);
+    };
+  }, []);
+
+  // 2. Fetch Summary & Diurnal Profile (only when backend is verified online)
+  useEffect(() => {
+    if (!apiOnline) return;
     async function fetchMetadata() {
       try {
-        const healthRes = await fetch(`${API_BASE}/health`);
-        if (healthRes.ok) setApiOnline(true);
-
         const [sumRes, profRes] = await Promise.all([
           fetch(`${API_BASE}/summary`),
           fetch(`${API_BASE}/error-profile?resolution=${errorResolution}`)
@@ -38,17 +97,17 @@ export default function App() {
         if (sumRes.ok) setSummary(await sumRes.json());
         if (profRes.ok) setErrorProfile(await profRes.json());
       } catch (err) {
-        console.warn("Backend not yet connected:", err);
-        setApiOnline(false);
+        console.warn("Failed fetching metadata:", err);
       } finally {
         setLoading(false);
       }
     }
     fetchMetadata();
-  }, [errorResolution]);
+  }, [apiOnline, errorResolution]);
 
-  // 2. Fetch 48 Settlement Periods for selected date
+  // 3. Fetch 48 Settlement Periods for selected date (when backend online)
   useEffect(() => {
+    if (!apiOnline) return;
     async function fetchSchedule() {
       try {
         const res = await fetch(`${API_BASE}/settlement-periods?date=${selectedDate}`);
@@ -61,7 +120,7 @@ export default function App() {
       }
     }
     fetchSchedule();
-  }, [selectedDate]);
+  }, [apiOnline, selectedDate]);
 
   // Enriched Chart Data with Empirical MAE Uncertainty Band (Forecast ± MAE)
   const chartData = useMemo(() => {
@@ -654,6 +713,79 @@ export default function App() {
           <span>Evaluation Horizon: Jan 02 – Feb 01, 2026</span>
         </div>
       </footer>
+
+      {/* COLD-START CLOUD GATEWAY WAKING-UP MODAL */}
+      {isWakingUp && !apiOnline && (
+        <div className="cold-start-overlay">
+          <div className="glass-card" style={{ maxWidth: 540, width: '100%', padding: '2.5rem', textAlign: 'center', border: '1px solid var(--border-active)', boxShadow: '0 0 50px rgba(6, 182, 212, 0.25)', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'linear-gradient(90deg, #06B6D4, #3B82F6, #10B981)' }} />
+            
+            <div style={{ position: 'relative', width: 72, height: 72, margin: '0 auto 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="pulse-radar" style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'radial-gradient(circle, rgba(6, 182, 212, 0.4), transparent)' }} />
+              <div style={{ position: 'relative', background: 'linear-gradient(135deg, #06B6D4, #2563EB)', padding: '1rem', borderRadius: '16px', boxShadow: '0 0 25px rgba(6, 182, 212, 0.5)' }}>
+                <Wind size={36} color="#FFFFFF" className="spin-slow" />
+              </div>
+            </div>
+
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+              <span className="badge badge-amber" style={{ fontSize: '0.75rem', padding: '0.3rem 0.8rem' }}>
+                Render Free Tier • Instance Warming Up
+              </span>
+            </div>
+
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#FFFFFF', marginBottom: '0.6rem', letterSpacing: '-0.02em' }}>
+              Waking Up AeroGrid Market Engine
+            </h2>
+
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: '1.6', marginBottom: '1.75rem' }}>
+              The Python FastAPI microservice is booting up on Render after a period of dormancy. 
+              Your 48-SP procurement schedules and January 2026 Elexon market data will automatically appear as soon as the container is ready.
+            </p>
+
+            {/* Real-time Diagnostics Box */}
+            <div style={{ background: 'rgba(0, 0, 0, 0.4)', borderRadius: '10px', padding: '1rem', border: '1px solid var(--border-subtle)', textAlign: 'left', marginBottom: '1.5rem', fontSize: '0.78rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Probe Endpoint:</span>
+                <span className="font-mono" style={{ color: 'var(--cyan)' }}>{API_BASE}/health</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Connection Attempt:</span>
+                <span style={{ color: '#FBBF24', fontWeight: 600 }}>#{retryCount} (Auto-polling every 3s)</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Elapsed Time:</span>
+                <span className="font-mono" style={{ color: '#FFFFFF', fontWeight: 600 }}>
+                  {wakeElapsed}s <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(Typically ~30–45s)</span>
+                </span>
+              </div>
+            </div>
+
+            {/* Smooth Progress Indicator */}
+            <div style={{ width: '100%', height: 6, background: 'rgba(255, 255, 255, 0.08)', borderRadius: 9999, overflow: 'hidden', marginBottom: '1.5rem' }}>
+              <div 
+                style={{ 
+                  height: '100%', 
+                  width: `${Math.min(95, Math.max(10, (wakeElapsed / 45) * 100))}%`, 
+                  background: 'linear-gradient(90deg, #06B6D4, #3B82F6)', 
+                  transition: 'width 1s linear',
+                  borderRadius: 9999 
+                }} 
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
+              <button 
+                className="btn-action" 
+                onClick={() => checkBackendHealth()}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}
+              >
+                <RefreshCw size={14} className="spin-slow" />
+                Ping Server Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
