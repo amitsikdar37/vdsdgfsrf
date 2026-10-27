@@ -120,37 +120,70 @@ def get_settlement_periods(
 
 
 @app.get("/api/v1/error-profile", tags=["Analytics"])
-def get_error_profile():
+def get_error_profile(resolution: str = Query("sp", description="'sp' for 48 settlement periods or 'hour' for 24 hours")):
     """
-    Returns the 24-hour diurnal error curve across January 2026.
-    Reveals how forecast error and bias evolve during peak vs off-peak hours.
+    Returns the diurnal error profile across January 2026.
+    Supports either full 48 settlement periods ('sp') or 24-hour native blocks ('hour').
     """
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT 
-            hour_of_day,
-            avg_forecast_mw,
-            avg_actual_mw,
-            mae,
-            rmse,
-            bias,
-            sample_count
-        FROM hourly_error_profile
-        ORDER BY hour_of_day ASC
-    """)
-    rows = cur.fetchall()
-    conn.close()
+    
+    if resolution == "hour":
+        cur.execute("""
+            SELECT 
+                hour_of_day as period,
+                avg_forecast_mw,
+                avg_actual_mw,
+                mae,
+                rmse,
+                bias,
+                sample_count
+            FROM hourly_error_profile
+            ORDER BY hour_of_day ASC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return [
+            {
+                "period": r["period"],
+                "label": f"{r['period']:02d}:00",
+                "avg_forecast_mw": r["avg_forecast_mw"],
+                "avg_actual_mw": r["avg_actual_mw"],
+                "mae": r["mae"],
+                "rmse": r["rmse"],
+                "bias": r["bias"],
+                "sample_count": r["sample_count"]
+            }
+            for r in rows
+        ]
+    else:
+        # Full 48 Settlement Periods Profile
+        cur.execute("""
+            SELECT 
+                settlement_period as period,
+                ROUND(AVG(forecast_mw), 2) as avg_forecast_mw,
+                ROUND(AVG(actual_mw), 2) as avg_actual_mw,
+                ROUND(AVG(abs(error_mw)), 2) as mae,
+                ROUND(SQRT(AVG(error_mw * error_mw)), 2) as rmse,
+                ROUND(AVG(error_mw), 2) as bias,
+                COUNT(*) as sample_count
+            FROM settlement_periods_48
+            GROUP BY settlement_period
+            ORDER BY settlement_period ASC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return [
+            {
+                "period": r["period"],
+                "label": f"SP {r['period']}",
+                "avg_forecast_mw": r["avg_forecast_mw"],
+                "avg_actual_mw": r["avg_actual_mw"],
+                "mae": r["mae"],
+                "rmse": r["rmse"],
+                "bias": r["bias"],
+                "sample_count": r["sample_count"]
+            }
+            for r in rows
+        ]
 
-    return [
-        {
-            "hour": r["hour_of_day"],
-            "avg_forecast_mw": r["avg_forecast_mw"],
-            "avg_actual_mw": r["avg_actual_mw"],
-            "mae": r["mae"],
-            "rmse": r["rmse"],
-            "bias": r["bias"],
-            "sample_count": r["sample_count"]
-        }
-        for r in rows
-    ]
