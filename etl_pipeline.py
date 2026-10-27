@@ -257,8 +257,9 @@ def save_and_analyze_dataset(actuals, frozen_forecasts, db_path="data/market_dat
             total_sq_err += sq_err
             total_bias_err += h_error
 
-            total_actual_mwh += mean_actual
-            total_forecast_mwh += f_mw
+            # Energy (MWh) = MW * 0.5 hours
+            total_actual_mwh += (a_odd * 0.5) + (a_even * 0.5)
+            total_forecast_mwh += (f_mw * 0.5) + (f_mw * 0.5)
 
             hour_buckets[h]["errors"].append(h_error)
             hour_buckets[h]["forecasts"].append(f_mw)
